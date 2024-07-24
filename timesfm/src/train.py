@@ -27,6 +27,7 @@ import datetime
 import orbax
 from sklearn.metrics import confusion_matrix
 from scipy.stats import spearmanr
+from utils import *
 
 NestedMap = py_utils.NestedMap
 JTensor = pytypes.JTensor
@@ -36,59 +37,40 @@ current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 
 np.random.seed(0)
 
-def create_learning_rate_fn(
-    peak_learning_rate: float,
-    steps_per_epoch: int,
-    num_epochs: int = 100,
-    warmup_epochs: int = 25,
-):
-    """Create learning rate schedule."""
-    print(steps_per_epoch, num_epochs, warmup_epochs)
-    warmup_fn = optax.linear_schedule(
-        init_value=0.0,
-        end_value=peak_learning_rate,
-        transition_steps=warmup_epochs * steps_per_epoch,
-    )
-    cosine_epochs = max(num_epochs - warmup_epochs, 1)
-    cosine_fn = optax.cosine_decay_schedule(
-        init_value=peak_learning_rate, decay_steps=cosine_epochs * steps_per_epoch
-    )
-    schedule_fn = optax.join_schedules(
-        schedules=[warmup_fn, cosine_fn],
-        boundaries=[warmup_epochs * steps_per_epoch],
-    )
-    return schedule_fn
+def get_conf_matrix(predictions, targets, prepend, threshold=0.001, num_classes=2, horizon_len=None, use_diff=False):
+    """
+    Computes the confusion matrix, predicted returns, and target returns from the given predictions and targets.
 
-def mse(predictions, targets):
-    squared_error = optax.losses.squared_error(predictions=predictions, targets=targets) 
-    return jnp.mean(squared_error)
+    Parameters:
+    predictions (array-like): The predicted values from the model.
+    targets (array-like): The true target values.
+    prepend (array-like): Values to prepend to the predictions and targets for calculating returns.
+    threshold (float, optional): The threshold for classifying the returns. Defaults to 0.001.
+    num_classes (int, optional): The number of classes for classification. Defaults to 2.
 
-def percent_mse(predictions, targets):
-    squared_error = optax.losses.squared_error(predictions=predictions, targets=targets) / targets**2
-    return jnp.mean(squared_error)
+    horizon_len (int, optional): The prediction horizon length. Must be at most the prediction length.
+    If None, it is assumed to be predictions.shape[1], the full prediction length. Defaults to None.
 
-def accuracy(conf_matrix):
-    correct = np.trace(conf_matrix)
-    total = np.sum(conf_matrix)
-    return correct/total
+    use_diff (bool, optional): Whether to use the difference for the initial prepend values. 
+    If true, calculates the accuracy based on pred[-1]-pred[0] vs targets[-1]-targes[0]. 
+    If false, use pred[-1]-prepend vs targets[-1]-preprend Defaults to False.
 
-def chance_rate(conf_matrix):
-    total = np.sum(conf_matrix)
-    cat = np.sum(conf_matrix, axis=1)
-    prob = cat/total
-    return np.sum(prob**2)
-
-def get_conf_matrix(predictions, targets, prepend, threshold=0.001, num_classes=2, output_len=None, use_diff=False):
+    Returns:
+    tuple: A tuple containing:
+        - conf_matrix_jax (jnp.ndarray): The confusion matrix.
+        - pred_returns (jnp.ndarray): The predicted returns.
+        - target_returns (jnp.ndarray): The target returns.
+    """
     # up=0, down=1, stay=2
-    if output_len is None:
-        output_len = predictions.shape[1]
+    if horizon_len is None:
+        horizon_len = predictions.shape[1]
     if use_diff:
         prepend_pred = predictions[:, :1]
         prepend_targets = targets[:, :1]
     else:
         prepend_pred = prepend_targets = prepend
-    predictions = predictions[:, (output_len-1)::output_len]
-    targets = targets[:, (output_len-1)::output_len]
+    predictions = predictions[:, (horizon_len-1)::horizon_len]
+    targets = targets[:, (horizon_len-1)::horizon_len]
     pred_returns = jnp.diff(predictions, n=1, prepend=prepend_pred)
     target_returns = jnp.diff(targets, n=1, prepend=prepend_targets)
     shifted_targets = jnp.concatenate([prepend, targets], axis=1)[:, :-1]
@@ -125,11 +107,27 @@ def get_conf_matrix(predictions, targets, prepend, threshold=0.001, num_classes=
     return conf_matrix_jax, pred_returns, target_returns
 
 class TrainState(train_state.TrainState):
+    # Initialize any other state variables here, currently not in use.
     pass
 
 
 def train_step(state, batch, learning_rate_fn, output_len=128, horizon_len=128, context_len=512):
-    """Perform a single training step."""
+    """
+    Perform a single training step.
+
+    Parameters:
+    state (object): An object containing the model parameters and optimizer state.
+    batch (tuple): A tuple containing the input and output data for the batch.
+    learning_rate_fn (callable): A function representing the learning rate schedule.
+    output_len (int, optional): The length of the output sequences to be predicted. Defaults to 128.
+    horizon_len (int, optional): The length of the horizon for model prediction. Defaults to 128. 
+    context_len (int, optional): The maximum length of the context for model input. Defaults to 512.
+
+    Returns:
+    tuple: A tuple containing:
+        - loss (float): The computed loss for the current training step.
+        - state (trainstate object): The updated state with the gradient applied.
+    """
     input_map, output_sequences = prepare_batch_data(batch)
     
     def loss_fn(params):
@@ -150,10 +148,30 @@ def train_step(state, batch, learning_rate_fn, output_len=128, horizon_len=128, 
     state = state.apply_gradients(grads=clipped_grads)
     return loss, state
 
-def eval_step(state, batch, loss_fn=mse, output_len=128, horizon_len=128, context_len=512, store_metrics=False, num_iters=None, use_diff=False):
-    if num_iters is None:
-        num_iters = horizon_len // output_len + horizon_len % output_len
+def eval_step(state, batch, loss_fn=mse, output_len=128, horizon_len=128, context_len=512, store_metrics=False):
+    """
+    Perform a single evaluation step.
 
+    Parameters:
+    state (object): An object containing the model parameters and optimizer state.
+    batch (tuple): A tuple containing the input and output data for the batch.
+    loss_fn (callable, optional): A function to compute the loss. Defaults to mean squared error (mse).
+    output_len (int, optional): The length of the output sequences to be predicted. Defaults to 128.
+    horizon_len (int, optional): The length of the horizon for model prediction. Defaults to 128.
+    We currently only support horizon_len <= output_len. horizon_len must divide output_len.
+    context_len (int, optional): The maximum length of the context for model input. Defaults to 512.
+    store_metrics (bool, optional): Flag to indicate whether to store and return additional metrics. Defaults to False.
+
+    Returns:
+    tuple: If store_metrics is True, returns a tuple containing:
+        - loss (float): The computed loss for the current evaluation step.
+        - new_conf_matrix (jnp.ndarray): The confusion matrix.
+        - pred_returns (jnp.ndarray): The predicted returns.
+        - target_returns (jnp.ndarray): The target returns.
+    
+    Otherwise, returns:
+    - loss (float): The computed loss for the current evaluation step.
+    """
     all_preds = []
     all_output_sequences = []
 
@@ -162,12 +180,14 @@ def eval_step(state, batch, loss_fn=mse, output_len=128, horizon_len=128, contex
     input_padding = []
     output_sequences = []
 
+    num_iters = output_len // horizon_len
+
     for i in range(num_iters):
-        input_map, output_seq = prepare_batch_data(batch, train=False, input_len=context_len+output_len*i)
+        input_map, output_seq = prepare_batch_data(batch, train=False, input_len=context_len+horizon_len*i)
         input_ts.append(input_map['input_ts'])
         input_freq.append(input_map['freq'])
         input_padding.append(input_map['input_padding'])
-        output_sequences.append(output_seq[:, :output_len])
+        output_sequences.append(output_seq[:, :horizon_len])
 
     input_ts = jnp.concatenate(input_ts, axis=0)
     input_freq = jnp.concatenate(input_freq, axis=0)
@@ -186,49 +206,73 @@ def eval_step(state, batch, loss_fn=mse, output_len=128, horizon_len=128, contex
         output_patch_len=output_len,
         max_len=context_len,
     )[0]
-    predictions = predictions[:, :output_len]
-    output_sequences = output_sequences[:, :output_len]
+    predictions = predictions[:, :horizon_len]
+    output_sequences = output_sequences[:, :horizon_len]
 
     loss = loss_fn(predictions, output_sequences)
 
     if store_metrics:
         new_conf_matrix, pred_returns, target_returns = get_conf_matrix(predictions=predictions, targets=output_sequences,\
-            prepend=input_map['input_ts'][:, -1:], output_len=output_len, use_diff=use_diff)
+            prepend=input_map['input_ts'][:, -1:], horizon_len=horizon_len, use_diff=False)
         
         return loss, new_conf_matrix, pred_returns, target_returns
     else:
         return loss
 
-def normalize_data(batch):
-    """ Normalizes the data such that the mean is 10"""
-    batch = 10 * batch / jnp.mean(batch, axis=1, keepdims=True)
-    return batch
 
+def random_masking(batch_train, input_len=512, context_len=512, output_len=128):
+    """
+    Casts a random mask on the training data such that up to input_len items from the back are dropped,
+    and the last output_len items are used as output data.
 
-def random_masking(batch_train, input_len=512, context_len=512, horizon_len=128):
-    """Casts a random mask on the train data such that up to input_len many items from the back are dropped,
-    the last horizon_len many items are used as output_data"""
+    Parameters:
+    batch_train (array-like): The training data batch.
+    input_len (int, optional): The length of input sequences from the back that may be dropped. Defaults to 512.
+    context_len (int, optional): The context length including the horizon. Defaults to 512.
+    output_len (int, optional): The length to be used as output data. Defaults to 128.
+
+    Returns:
+    tuple: A tuple containing:
+        - input_sequences (jnp.ndarray): The masked input sequences.
+        - output_sequences (jnp.ndarray): The sequences used as output (typically the last output_len items).
+        - input_padding (jnp.ndarray): The padding mask indicating which input items are kept.
+    """
     batch_size, seq_len = batch_train.shape
-    random_drop = np.random.randint(0, context_len-horizon_len) #tune the 32 parameter to adjust training loss curve noisiness
+    random_drop = np.random.randint(0, context_len-output_len) #tune the 32 parameter to adjust training loss curve noisiness
     # random_drop = 0 #new to avoid stochasticity (but turns out to be helpful?)
     if random_drop > 0:
         batch_train = batch_train[:, :-random_drop]
         prepend = jnp.ones((batch_size, random_drop))
         batch_train = jnp.concatenate([prepend, batch_train], axis=1)
-    output_sequences = batch_train[:, -horizon_len:]
-    input_sequences = batch_train[:, :-horizon_len]
+    output_sequences = batch_train[:, -output_len:]
+    input_sequences = batch_train[:, :-output_len]
 
-    nums = jnp.arange(0, context_len+horizon_len)
-    input_padding = jnp.array(nums).reshape((1, context_len+horizon_len))
+    nums = jnp.arange(0, context_len+output_len)
+    input_padding = jnp.array(nums).reshape((1, context_len+output_len))
     input_padding = jnp.repeat(input_padding, batch_size, axis=0)
-    random_indices = np.random.randint(random_drop, context_len-horizon_len, size=(batch_size, 1))
-    random_indices = jnp.repeat(random_indices, context_len+horizon_len, axis=1)
+    random_indices = np.random.randint(random_drop, context_len-output_len, size=(batch_size, 1))
+    random_indices = jnp.repeat(random_indices, context_len+output_len, axis=1)
     input_padding = jnp.where(input_padding >= random_indices, 0, 1)
 
     return input_sequences, output_sequences, input_padding
 
 
-def prepare_batch_data(batch, train=True, input_len=512, context_len=512, horizon_len=128):
+def prepare_batch_data(batch, train=True, input_len=512, context_len=512, output_len=128):
+    """
+    Prepares the batch data for training or evaluation by generating input sequences, output sequences, and input padding.
+
+    Parameters:
+    batch (array-like): The input data batch.
+    train (bool, optional): Flag to indicate whether to prepare the batch for training or evaluation. Defaults to True.
+    input_len (int, optional): The length of input sequences to be considered. Defaults to 512.
+    context_len (int, optional): The length of the context. Defaults to 512.
+    output_len (int, optional): The length of the output sequences. Defaults to 128.
+
+    Returns:
+    tuple: A tuple containing:
+        - input_map (NestedMap): A mapping of input sequences, input padding, and input frequency.
+        - output_sequences (jnp.ndarray): The sequences used as output (typically the last output_len items).
+    """
     batch_size, sequence_length = batch.shape
     num_input_patches = sequence_length // input_len + 1
 
@@ -237,8 +281,8 @@ def prepare_batch_data(batch, train=True, input_len=512, context_len=512, horizo
         
     else:
         input_sequences = batch[:, max(0, input_len - context_len):input_len]
-        input_padding = jnp.zeros((batch_size, context_len+horizon_len))
-        output_sequences = batch[:, input_len:input_len+horizon_len]
+        input_padding = jnp.zeros((batch_size, context_len+output_len))
+        output_sequences = batch[:, input_len:input_len+output_len]
 
     inp_freq = jnp.zeros((batch_size, 1))
     
@@ -251,6 +295,20 @@ def prepare_batch_data(batch, train=True, input_len=512, context_len=512, horizo
     return input_map, output_sequences
 
 def preprocess_csv(file_path, batch_size=32, train_ratio=0.75):
+    """
+    Preprocesses a CSV file into training and evaluation TensorFlow datasets.
+
+    Parameters:
+    file_path (str): Path to the CSV file.
+    batch_size (int, optional): The size of each batch. Defaults to 32.
+    train_ratio (float, optional): Ratio of data to be used for training. The rest is used for evaluation. Defaults to 0.75.
+
+    Returns:
+    tuple: A tuple containing:
+        - train_dataset (tf.data.Dataset): Training dataset.
+        - eval_dataset (tf.data.Dataset): Evaluation dataset.
+        - train_size (int): Number of training samples.
+    """
     df = pd.read_csv(file_path, dtype='float64')
     df = df.dropna(axis=1, how='any')
     df = df.transpose()
@@ -275,13 +333,18 @@ def preprocess_csv(file_path, batch_size=32, train_ratio=0.75):
 
     return train_dataset, eval_dataset, train_size
 
-def create_optimizer(learning_rate_fn, momentum):
-    return optax.sgd(
-      learning_rate=learning_rate_fn,
-      momentum=momentum,
-    )
-
 def restart_state(model, config, learning_rate_fn):
+    """
+    Restarts the training state with a new optimizer and model parameters.
+
+    Parameters:
+    model (object): The model object containing the parameters and apply function.
+    config (object): Configuration object with model settings and hyperparameters.
+    learning_rate_fn (callable): The learning rate schedule function.
+
+    Returns:
+    TrainState: The initialized training state.
+    """
     tx = create_optimizer(learning_rate_fn=learning_rate_fn, momentum=config.momentum)
     apply_fn = functools.partial(
         model._model.apply, 
@@ -299,7 +362,16 @@ def restart_state(model, config, learning_rate_fn):
     return state
 
 def reshape_batch(batch, num_devices):
-    """Reshapes and pads batch to send to each device"""
+    """
+    Reshapes and pads a batch to evenly distribute data among multiple devices.
+
+    Parameters:
+    batch (array-like): The input batch to be reshaped.
+    num_devices (int): The number of devices to distribute the batch across.
+
+    Returns:
+    array: The reshaped batch.
+    """
     batch = jnp.array(batch)
     total_batch_size = batch.shape[0]
     if total_batch_size % num_devices:
@@ -310,10 +382,45 @@ def reshape_batch(batch, num_devices):
     batch = batch.reshape((num_devices, device_batch_size, -1))
     return batch
 
+def save_checkpoint(state, save_dir, keep=10, use_paxml=True, model=None):
+    """
+    Saves a checkpoint of the current training state.
+
+    Parameters:
+    state (object): The current training state.
+    save_dir (str): Directory to save the checkpoint.
+    keep (int, optional): Number of checkpoints to keep. Defaults to 10.
+    use_paxml (bool, optional): Whether to use the PaxML library for checkpointing. Defaults to True.
+    model (object, optional): The model object, required if `use_paxml` is True. Defaults to None.
+    """
+    if use_paxml:
+        state = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], state))
+        logging.info('Saving checkpoint step %d.', state.step)
+        old_state = model._train_state
+        state = old_state.new_state(old_state.step, state.params, [])
+        paxml.checkpoints.save_checkpoint(state, save_dir)
+    else:
+        state = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], state))
+        step = int(state.step)
+        logging.info('Saving checkpoint step %d.', step)
+        checkpoints.save_checkpoint_multiprocess(save_dir, state, step, keep=keep)
+
 def train_and_evaluate(
     model: Any, config: py_utils.NestedMap, workdir: str, num_classes=2, plus_one=False
 ) -> TrainState:
-    """Execute model training and evaluation loop."""
+    """
+    Executes the model training and evaluation loop.
+
+    Parameters:
+    model (Any): The model to be trained and evaluated.
+    config (py_utils.NestedMap): Configuration object containing model settings and hyperparameters.
+    workdir (str): Working directory for saving logs and checkpoints.
+    num_classes (int, optional): Number of classes for classification. Defaults to 2.
+    plus_one (bool, optional): Whether to add one to the batch before logging. Defaults to False.
+
+    Returns:
+    TrainState: The final training state after completing the training loop.
+    """
 
     writer = tf.summary.create_file_writer(workdir + '/logs/' + current_time)
 
@@ -418,120 +525,5 @@ def train_and_evaluate(
     jax.random.normal(jax.random.PRNGKey(0), ()).block_until_ready()
 
     jax.config.update('jax_disable_jit', False)
-
-    return state
-
-def save_checkpoint(state, save_dir, keep=10, use_paxml=True, model=None):
-    #this is the pax implementation
-    if use_paxml:
-        state = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], state))
-        logging.info('Saving checkpoint step %d.', state.step)
-        old_state = model._train_state
-        state = old_state.new_state(old_state.step, state.params, [])
-        paxml.checkpoints.save_checkpoint(state, save_dir)
-    else:
-        # below is the flax implementation
-        state = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], state))
-        step = int(state.step)
-        logging.info('Saving checkpoint step %d.', step)
-        checkpoints.save_checkpoint_multiprocess(save_dir, state, step, keep=keep)
-
-
-def restore_checkpoint(state, save_dir, use_paxml=False):
-    #this is the pax implementation
-    if use_paxml:
-        return checkpoints.restore_checkpoint(state, save_dir)
-    #below is the flax implementation
-    else:
-        return checkpoints.restore_checkpoint(save_dir, state)
-
-def restore_and_evaluate(
-    model: Any, config: py_utils.NestedMap, workdir: str, checkpoint_path: str=None, num_classes=2, output_lens=[128, 64, 32, 16, 8, 4, 2], plus_one: bool=True
-) -> TrainState:
-    """Execute model training and evaluation loop."""
-
-    writer = tf.summary.create_file_writer(workdir + '/logs/' + current_time + '-' + config.dataset.name)
-
-    logging.info('config.batch_size: {}'.format(config.batch_size))
-
-    if config.batch_size % jax.process_count() > 0:
-        raise ValueError('Batch size must be divisible by the number of processes')
-
-    local_batch_size = config.batch_size // jax.process_count()
-    logging.info('local_batch_size: {}'.format(local_batch_size))
-    logging.info('jax.local_device_count: {}'.format(jax.local_device_count()))
-
-    if local_batch_size % jax.local_device_count() > 0:
-        raise ValueError('Local batch size must be divisible by the number of local devices')
-
-    rng = jax.random.PRNGKey(config.seed)
-
-    train_loader, eval_loader, train_size = preprocess_csv(config.dataset_path, batch_size=config.batch_size, train_ratio=0)
-    steps_per_epoch = train_size // config.batch_size + 1
-
-    output_lens = np.array([output_lens])
-    output_lens = np.ravel(output_lens)
-
-    state = restart_state(model=model, config=config, learning_rate_fn=0) # set learning rate to 0 in eval
-    if checkpoint_path is not None:
-        state = restore_checkpoint(state, checkpoint_path)
-    state = jax_utils.replicate(state)
-
-    for output_len in output_lens:
-        print('output_len:', output_len)
-        p_eval_step = jax.pmap(
-            functools.partial(eval_step, output_len=output_len, use_diff=True, store_metrics=True),
-            axis_name='batch'
-        )
-
-        train_losses = []
-        eval_losses = []
-        conf_matrices = []
-        pred_returns_arr = jnp.array([])
-        target_returns_arr = jnp.array([])
-
-        model._eval_context = base_layer.JaxContext.HParams(do_eval=True)
-        for n_batch, batch in enumerate(eval_loader):
-            batch = jnp.array(batch)
-            if plus_one:
-                batch = jnp.ones_like(batch) + batch
-            batch_log = jnp.log(batch)
-            batch_log = reshape_batch(batch_log, model.num_devices)
-
-            loss, conf_matrix, pred_returns, target_returns = p_eval_step(state, batch_log)
-
-            pred_returns = jnp.ravel(pred_returns) # actually this is redundant for now: it reshapes (model.num_devices, n) to the same thing
-            target_returns = jnp.ravel(target_returns) 
-
-            mean_loss = jnp.mean(loss)
-            eval_losses.append(mean_loss)
-            conf_matrices.append(conf_matrix)
-            pred_returns_arr = jnp.append(pred_returns_arr, pred_returns)
-            target_returns_arr = jnp.append(target_returns_arr, target_returns)
-
-        model._eval_context = base_layer.JaxContext.HParams(do_eval=False)
-        eval_loss = np.mean(eval_losses)
-        conf_matrices = np.array(conf_matrices)
-        conf_matrix = np.sum(conf_matrices, axis=(0,1))
-        conf_matrices = np.sum(conf_matrices, axis=1)
-        accuracies = [accuracy(conf_matrix=conf_matrix) for conf_matrix in conf_matrices]
-        acc = np.mean(accuracies)
-        acc_std = np.std(accuracies)
-        returns_arr = jnp.concatenate([target_returns_arr[:, None], pred_returns_arr[:, None]], axis=1)
-        corr = spearmanr(returns_arr)
-        returns_arr = pd.DataFrame(returns_arr)
-        returns_arr.to_csv(workdir + f'/test_results/returns-{output_len}.csv', index=False)
-
-        print('Eval Loss: ', eval_loss)
-        print('Confusion Matrix:', conf_matrix)
-        print('Accuracy: ', acc)
-        print('Accuracy Std Dev: ', acc_std)
-        print('Accuracies:', accuracies)
-        print('Spearman Rank Correlation:', corr)
-        with writer.as_default():
-            tf.summary.scalar('Eval Loss', eval_loss, step=output_len)
-            tf.summary.scalar('Accuracy', accuracy(conf_matrix=conf_matrix), step=output_len)
-
-        jax.random.normal(jax.random.PRNGKey(0), ()).block_until_ready()
 
     return state
