@@ -166,3 +166,4 @@ cython_debug/
 timesfm/logs/
 timesfm/checkpoints/
 timesfm/src/run_train.sh
+analysis.ipynb

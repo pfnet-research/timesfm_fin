@@ -38,12 +38,13 @@ def get_config():
   config.dataset_path = ''
 
   # Parameters
-  config.context_len = 512
+  config.context_len = config.input_len = 512
+  config.output_len = 128
   config.horizon_len = 128
 
   # Training
-  config.learning_rate = 5e-4
-  config.warmup_epochs = 5
+  config.learning_rate = 1e-4
+  config.warmup_epochs = 25
   config.momentum = 0.9
   config.batch_size = 128 * 8
   config.num_epochs = 100

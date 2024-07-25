@@ -1,223 +1,55 @@
 import logging
 import time
-from typing import Any
+from typing import Any, Optional, Tuple
 import functools
+import gc
+import datetime
+import os
+
+import timesfm
+import gc
+import numpy as np
+import pandas as pd
+from timesfm import patched_decoder
+from timesfm import data_loader
 
 import jax
-import jax.numpy as jnp
-import numpy as np
-import optax
-from praxis import base_input
-from praxis import base_layer
-from praxis import base_model
-from praxis import base_hyperparams
+from jax import numpy as jnp
+from praxis import pax_fiddle
 from praxis import py_utils
 from praxis import pytypes
-from praxis.layers import normalizations
-from praxis.layers import transformers
-import praxis.optimizers as optimizers
+from praxis import base_model
+from praxis import optimizers
+from praxis import schedules
+from praxis import base_hyperparams
+from praxis import base_layer
+from paxml import tasks_lib
+from paxml import trainer_lib
+from paxml import checkpoints
+from paxml import learners
+from paxml import partitioning
+from paxml import checkpoint_types
+
+from clu import metric_writers
 import tensorflow as tf
-import tensorflow_datasets as tfds
-import pandas as pd
-from flax import jax_utils
-from flax.training import train_state, orbax_utils, checkpoints
-import paxml
-from tensorflow.keras.callbacks import TensorBoard
-import datetime
-import orbax
-from sklearn.metrics import confusion_matrix
-from scipy.stats import spearmanr
+
 from utils import *
 
 NestedMap = py_utils.NestedMap
 JTensor = pytypes.JTensor
 instantiate = base_hyperparams.instantiate
 
+_INPUT_TS = "input_ts"
+_TARGET_FUTURE = "actual_ts"
+_INPUT_PADDING = "input_padding"
+_OUTPUT_TS = "output_ts"
+_FREQ = "freq"
+_OUTPUT_TOKENS = "output_tokens"
+_STATS = "stats"
+
 current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 
 np.random.seed(0)
-
-def get_conf_matrix(predictions, targets, prepend, threshold=0.001, num_classes=2, horizon_len=None, use_diff=False):
-    """
-    Computes the confusion matrix, predicted returns, and target returns from the given predictions and targets.
-
-    Parameters:
-    predictions (array-like): The predicted values from the model.
-    targets (array-like): The true target values.
-    prepend (array-like): Values to prepend to the predictions and targets for calculating returns.
-    threshold (float, optional): The threshold for classifying the returns. Defaults to 0.001.
-    num_classes (int, optional): The number of classes for classification. Defaults to 2.
-
-    horizon_len (int, optional): The prediction horizon length. Must be at most the prediction length.
-    If None, it is assumed to be predictions.shape[1], the full prediction length. Defaults to None.
-
-    use_diff (bool, optional): Whether to use the difference for the initial prepend values. 
-    If true, calculates the accuracy based on pred[-1]-pred[0] vs targets[-1]-targes[0]. 
-    If false, use pred[-1]-prepend vs targets[-1]-preprend Defaults to False.
-
-    Returns:
-    tuple: A tuple containing:
-        - conf_matrix_jax (jnp.ndarray): The confusion matrix.
-        - pred_returns (jnp.ndarray): The predicted returns.
-        - target_returns (jnp.ndarray): The target returns.
-    """
-    # up=0, down=1, stay=2
-    if horizon_len is None:
-        horizon_len = predictions.shape[1]
-    if use_diff:
-        prepend_pred = predictions[:, :1]
-        prepend_targets = targets[:, :1]
-    else:
-        prepend_pred = prepend_targets = prepend
-    predictions = predictions[:, (horizon_len-1)::horizon_len]
-    targets = targets[:, (horizon_len-1)::horizon_len]
-    pred_returns = jnp.diff(predictions, n=1, prepend=prepend_pred)
-    target_returns = jnp.diff(targets, n=1, prepend=prepend_targets)
-    shifted_targets = jnp.concatenate([prepend, targets], axis=1)[:, :-1]
-    pred_returns /= shifted_targets
-    target_returns /= shifted_targets
-    # print(predictions.shape, targets.shape, prepend.shape, pred_returns.shape, target_returns.shape)
-
-    pred_returns = jnp.ravel(pred_returns) #TODO: CHANGE THIS TO TAKE STD DEV OVER t
-    target_returns = jnp.ravel(target_returns)
-
-    # Function to classify values
-    if num_classes==3:
-        def classify(value, threshold=threshold):
-            return jnp.where(value > threshold, 0, jnp.where(value < -threshold, 1, 2))
-    else:
-        # assume that num_classes==2
-        assert num_classes==2
-        # def classify(value, threshold=threshold):
-        #     return jnp.where(value > 0, 0, 1)
-        def classify(value, threshold=threshold):
-            return jnp.where(value > threshold, 0, jnp.where(value < -threshold, 1, 2))
-
-    pred_directions = classify(pred_returns)
-    target_directions = classify(target_returns)
-
-    # Confusion matrix implementation using JAX
-    def confusion_matrix_jax(target, pred, num_classes=num_classes):
-        return jnp.array([
-            [(target == i).astype(jnp.int32).dot((pred == j).astype(jnp.int32)) for j in range(num_classes)] 
-            for i in range(num_classes)
-        ])
-    
-    conf_matrix_jax = confusion_matrix_jax(target_directions, pred_directions)
-    return conf_matrix_jax, pred_returns, target_returns
-
-class TrainState(train_state.TrainState):
-    # Initialize any other state variables here, currently not in use.
-    pass
-
-
-def train_step(state, batch, learning_rate_fn, output_len=128, horizon_len=128, context_len=512):
-    """
-    Perform a single training step.
-
-    Parameters:
-    state (object): An object containing the model parameters and optimizer state.
-    batch (tuple): A tuple containing the input and output data for the batch.
-    learning_rate_fn (callable): A function representing the learning rate schedule.
-    output_len (int, optional): The length of the output sequences to be predicted. Defaults to 128.
-    horizon_len (int, optional): The length of the horizon for model prediction. Defaults to 128. 
-    context_len (int, optional): The maximum length of the context for model input. Defaults to 512.
-
-    Returns:
-    tuple: A tuple containing:
-        - loss (float): The computed loss for the current training step.
-        - state (trainstate object): The updated state with the gradient applied.
-    """
-    input_map, output_sequences = prepare_batch_data(batch)
-    
-    def loss_fn(params):
-        predictions = state.apply_fn(
-            params,
-            input_map,
-            horizon_len=horizon_len,
-            output_patch_len=output_len,
-            max_len=context_len,
-        )[0]
-        loss = mse(predictions, output_sequences)
-        return loss
-
-    grad_fn = jax.value_and_grad(loss_fn, has_aux=False)
-    loss, grads = grad_fn(state.params)
-    clipper = optax.clip_by_global_norm(1.)
-    clipped_grads, _ = clipper.update(grads, state)
-    state = state.apply_gradients(grads=clipped_grads)
-    return loss, state
-
-def eval_step(state, batch, loss_fn=mse, output_len=128, horizon_len=128, context_len=512, store_metrics=False):
-    """
-    Perform a single evaluation step.
-
-    Parameters:
-    state (object): An object containing the model parameters and optimizer state.
-    batch (tuple): A tuple containing the input and output data for the batch.
-    loss_fn (callable, optional): A function to compute the loss. Defaults to mean squared error (mse).
-    output_len (int, optional): The length of the output sequences to be predicted. Defaults to 128.
-    horizon_len (int, optional): The length of the horizon for model prediction. Defaults to 128.
-    We currently only support horizon_len <= output_len. horizon_len must divide output_len.
-    context_len (int, optional): The maximum length of the context for model input. Defaults to 512.
-    store_metrics (bool, optional): Flag to indicate whether to store and return additional metrics. Defaults to False.
-
-    Returns:
-    tuple: If store_metrics is True, returns a tuple containing:
-        - loss (float): The computed loss for the current evaluation step.
-        - new_conf_matrix (jnp.ndarray): The confusion matrix.
-        - pred_returns (jnp.ndarray): The predicted returns.
-        - target_returns (jnp.ndarray): The target returns.
-    
-    Otherwise, returns:
-    - loss (float): The computed loss for the current evaluation step.
-    """
-    all_preds = []
-    all_output_sequences = []
-
-    input_ts = []
-    input_freq = []
-    input_padding = []
-    output_sequences = []
-
-    num_iters = output_len // horizon_len
-
-    for i in range(num_iters):
-        input_map, output_seq = prepare_batch_data(batch, train=False, input_len=context_len+horizon_len*i)
-        input_ts.append(input_map['input_ts'])
-        input_freq.append(input_map['freq'])
-        input_padding.append(input_map['input_padding'])
-        output_sequences.append(output_seq[:, :horizon_len])
-
-    input_ts = jnp.concatenate(input_ts, axis=0)
-    input_freq = jnp.concatenate(input_freq, axis=0)
-    input_padding = jnp.concatenate(input_padding, axis=0)
-    output_sequences = jnp.concatenate(output_sequences, axis=0)
-    input_map = NestedMap({
-        "input_ts": input_ts,
-        "input_padding": input_padding,
-        "freq": input_freq
-    })
-
-    predictions = state.apply_fn(
-        state.params,
-        input_map,
-        horizon_len=horizon_len,
-        output_patch_len=output_len,
-        max_len=context_len,
-    )[0]
-    predictions = predictions[:, :horizon_len]
-    output_sequences = output_sequences[:, :horizon_len]
-
-    loss = loss_fn(predictions, output_sequences)
-
-    if store_metrics:
-        new_conf_matrix, pred_returns, target_returns = get_conf_matrix(predictions=predictions, targets=output_sequences,\
-            prepend=input_map['input_ts'][:, -1:], horizon_len=horizon_len, use_diff=False)
-        
-        return loss, new_conf_matrix, pred_returns, target_returns
-    else:
-        return loss
 
 
 def random_masking(batch_train, input_len=512, context_len=512, output_len=128):
@@ -255,6 +87,29 @@ def random_masking(batch_train, input_len=512, context_len=512, output_len=128):
     input_padding = jnp.where(input_padding >= random_indices, 0, 1)
 
     return input_sequences, output_sequences, input_padding
+
+
+def train_step(states, prng_key, batch, jax_task=None):
+    input_map, output_sequences = prepare_batch_data(batch)
+    inputs = NestedMap(input_ts=input_map['input_ts'], actual_ts=output_sequences)
+    return trainer_lib.train_step_single_learner(
+        jax_task, states, prng_key, inputs
+    )
+
+def eval_step(states, prng_key, batch, jax_task=None, store_metrics=False):
+    input_map, output_sequences = prepare_batch_data(batch)
+    inputs = NestedMap(input_ts=input_map['input_ts'], actual_ts=output_sequences)
+    states = states.to_eval_state()
+    _, step_fun_out = trainer_lib.eval_step_single_learner(
+        jax_task, states, prng_key, inputs
+    )
+    loss = step_fun_out.loss
+    if store_metrics:
+        new_conf_matrix, pred_returns, target_returns = get_conf_matrix(predictions=predictions, targets=output_sequences,\
+            prepend=input_map['input_ts'][:, -1:], output_len=output_len, use_diff=use_diff)
+        return loss, new_conf_matrix
+    else:
+        return loss
 
 
 def prepare_batch_data(batch, train=True, input_len=512, context_len=512, output_len=128):
@@ -333,33 +188,6 @@ def preprocess_csv(file_path, batch_size=32, train_ratio=0.75):
 
     return train_dataset, eval_dataset, train_size
 
-def restart_state(model, config, learning_rate_fn):
-    """
-    Restarts the training state with a new optimizer and model parameters.
-
-    Parameters:
-    model (object): The model object containing the parameters and apply function.
-    config (object): Configuration object with model settings and hyperparameters.
-    learning_rate_fn (callable): The learning rate schedule function.
-
-    Returns:
-    TrainState: The initialized training state.
-    """
-    tx = create_optimizer(learning_rate_fn=learning_rate_fn, momentum=config.momentum)
-    apply_fn = functools.partial(
-        model._model.apply, 
-        method=model._model.decode,
-        rngs={
-                base_layer.PARAMS: model._key1,
-                base_layer.RANDOM: model._key2,
-            }
-    )
-    state = TrainState.create(
-        apply_fn=apply_fn,
-        params=model._train_state.mdl_vars,
-        tx=tx
-    )
-    return state
 
 def reshape_batch(batch, num_devices):
     """
@@ -382,32 +210,81 @@ def reshape_batch(batch, num_devices):
     batch = batch.reshape((num_devices, device_batch_size, -1))
     return batch
 
-def save_checkpoint(state, save_dir, keep=10, use_paxml=True, model=None):
-    """
-    Saves a checkpoint of the current training state.
 
-    Parameters:
-    state (object): The current training state.
-    save_dir (str): Directory to save the checkpoint.
-    keep (int, optional): Number of checkpoints to keep. Defaults to 10.
-    use_paxml (bool, optional): Whether to use the PaxML library for checkpointing. Defaults to True.
-    model (object, optional): The model object, required if `use_paxml` is True. Defaults to None.
-    """
-    if use_paxml:
-        state = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], state))
-        logging.info('Saving checkpoint step %d.', state.step)
-        old_state = model._train_state
-        state = old_state.new_state(old_state.step, state.params, [])
-        paxml.checkpoints.save_checkpoint(state, save_dir)
+@pax_fiddle.auto_config
+def build_learner(learning_rate:float, warmup_epochs:int, total_epochs:int, steps_per_epoch:int) -> learners.Learner:
+  return pax_fiddle.Config(
+      learners.Learner,
+      name='learner',
+      loss_name='mse_loss',
+      optimizer=optimizers.Sgd(
+        clip_gradient_norm_to_value=1.,
+        learning_rate=learning_rate,
+        lr_schedule=pax_fiddle.Config(
+            schedules.LinearRampupCosineDecay,
+            warmup_steps=warmup_epochs*steps_per_epoch,
+            decay_start=warmup_epochs*steps_per_epoch,
+            decay_end=total_epochs*steps_per_epoch,
+            min_ratio=0.,
+            max=1. # this value is multiplied by the base learning rate (https://github.com/google/praxis/blob/da4fe8dfc762e510a26c4c241f319b38c1f34366/praxis/optimizers.py#L1194)
+        ),
+      ),
+      # Linear probing i.e we hold the transformer layers fixed.
+    #   bprop_variable_exclusion=['.*/stacked_transformer_layer/.*'],
+  )
+
+
+class PatchedDecoderFinetuneFinance(patched_decoder.PatchedDecoderFinetuneModel):
+  """Model class for finetuning patched time-series decoder.
+  We adjust the default implementation to include masking during fine-tuning 
+
+  Attributes:
+    core_layer_tpl: config for core layer.
+    freq: freq to finetune on.
+  """
+
+  def compute_predictions(self, input_batch: NestedMap) -> NestedMap:
+    input_ts = input_batch[_INPUT_TS]
+    if 'input_padding' in input_batch:
+        input_padding = input_batch['input_padding']
     else:
-        state = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], state))
-        step = int(state.step)
-        logging.info('Saving checkpoint step %d.', step)
-        checkpoints.save_checkpoint_multiprocess(save_dir, state, step, keep=keep)
+        input_padding = jnp.zeros_like(input_ts)
+    context_len = input_ts.shape[1]
+    input_patch_len = self.core_layer_tpl.patch_len
+    context_pad = (
+        (context_len + input_patch_len - 1) // input_patch_len
+    ) * input_patch_len - context_len
+
+    input_ts = jnp.pad(input_ts, [(0, 0), (context_pad, 0)])
+    input_padding = jnp.pad(
+        input_padding, [(0, 0), (context_pad, 0)], constant_values=1
+    )
+    freq = jnp.ones([input_ts.shape[0], 1], dtype=jnp.int32) * self.freq
+    new_input_batch = NestedMap(
+        input_ts=input_ts,
+        input_padding=input_padding,
+        freq=freq,
+    )
+    return self.core_layer(new_input_batch)
+
+  def compute_loss(
+      self, prediction_output: NestedMap, input_batch: NestedMap
+  ) -> Tuple[NestedMap, NestedMap]:
+    output_ts = prediction_output[_OUTPUT_TS]
+    actual_ts = input_batch[_TARGET_FUTURE]
+    pred_ts = output_ts[:, -1, 0 : actual_ts.shape[1], :]
+    loss = jnp.square(pred_ts[:, :, 0] - actual_ts)
+    mse_loss = loss.mean()
+    for i, quantile in enumerate(self.core_layer.quantiles):
+      loss += self._quantile_loss(pred_ts[:, :, i + 1], actual_ts, quantile)
+    loss = loss.mean()
+    loss_weight = jnp.array(1.0, dtype=jnp.float32)
+    per_example_out = NestedMap()
+    return {"mse_loss": (mse_loss, loss_weight), "avg_qloss": (loss, loss_weight)}, per_example_out
 
 def train_and_evaluate(
     model: Any, config: py_utils.NestedMap, workdir: str, num_classes=2, plus_one=False
-) -> TrainState:
+) -> None:
     """
     Executes the model training and evaluation loop.
 
@@ -421,109 +298,152 @@ def train_and_evaluate(
     Returns:
     TrainState: The final training state after completing the training loop.
     """
+    logdir = os.path.join(workdir, 'logs', current_time)
+    os.makedirs(logdir, exist_ok=True)
 
-    writer = tf.summary.create_file_writer(workdir + '/logs/' + current_time)
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
 
-    logging.info('config.batch_size: {}'.format(config.batch_size))
+    # Check and add handlers if not already present
+    if not logger.hasHandlers():
+        file_handler = logging.FileHandler(os.path.join(logdir, 'logs.log'))
+        console_handler = logging.StreamHandler()
+        
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        file_handler.setFormatter(formatter)
+        console_handler.setFormatter(formatter)
+        
+        logger.addHandler(file_handler)
+        logger.addHandler(console_handler)
+
+    logger.info('config.batch_size: {}'.format(config.batch_size))
+
+    writer = tf.summary.create_file_writer(logdir)
+
+    logger.info('config.batch_size: {}'.format(config.batch_size))
 
     if config.batch_size % jax.process_count() > 0:
         raise ValueError('Batch size must be divisible by the number of processes')
 
     local_batch_size = config.batch_size // jax.process_count()
-    logging.info('local_batch_size: {}'.format(local_batch_size))
-    logging.info('jax.local_device_count: {}'.format(jax.local_device_count()))
+    logger.info('local_batch_size: {}'.format(local_batch_size))
+    logger.info('jax.local_device_count: {}'.format(jax.local_device_count()))
 
     if local_batch_size % jax.local_device_count() > 0:
         raise ValueError('Local batch size must be divisible by the number of local devices')
 
-    rng = jax.random.PRNGKey(config.seed)
-
     train_loader, eval_loader, train_size = preprocess_csv(config.dataset_path, batch_size=config.batch_size)
-    # _, test_loader, _ = preprocess_csv(config.testset, batch_size=config.batch_size, train_ratio=0)
     steps_per_epoch = train_size // config.batch_size + 1
 
-    learning_rate_fn = create_learning_rate_fn(peak_learning_rate=config.learning_rate, steps_per_epoch=steps_per_epoch, \
-        num_epochs=config.num_epochs, warmup_epochs=config.warmup_epochs)
-
-    jax.config.update('jax_disable_jit', False)
-
-    p_train_step = jax.pmap(
-        functools.partial(train_step, learning_rate_fn=learning_rate_fn),
-        axis_name='batch',
+    tfm = model
+    model = pax_fiddle.Config(
+        PatchedDecoderFinetuneFinance,
+        name='patched_decoder_finetune',
+        core_layer_tpl=model.model_p,
     )
 
-    p_eval_step = jax.pmap(
-        functools.partial(eval_step, output_len=128, store_metrics=True),
-         axis_name='batch'
+    task_p = tasks_lib.SingleTask(
+        name='ts-learn',
+        model=model,
+        train=tasks_lib.SingleTask.Train(
+            learner=build_learner(
+                learning_rate=config.learning_rate,
+                warmup_epochs=config.warmup_epochs,
+                total_epochs=config.num_epochs,
+                steps_per_epoch=steps_per_epoch),
+        ),
     )
 
-    p_test_step = jax.pmap(
-        functools.partial(eval_step, output_len=4),
-         axis_name='batch'
+    # task_p.model.ici_mesh_shape = [1, 1, 1]
+    # task_p.model.mesh_axis_names = ['replica', 'data', 'mdl']
+
+    # DEVICES = np.array(jax.devices()).reshape([1, 1, 1])
+    # MESH = jax.sharding.Mesh(DEVICES, ['replica', 'data', 'mdl'])
+
+    num_devices = jax.local_device_count()
+    logger.info(f'num_devices: {num_devices}')
+    # logger.info(f'device kind: {jax.local_devices()[0].device_kind}') #this line takes up a lot of time
+
+    jax_task = task_p
+    key = jax.random.PRNGKey(seed=config.seed)
+    key, init_key = jax.random.split(key)
+
+    init_ts = jnp.ones((num_devices, config.input_len))
+    init_touts = jnp.ones((num_devices, config.output_len))
+    init_batch = NestedMap(input_ts=init_ts, actual_ts=init_touts)
+
+    jax_model_states, _ = trainer_lib.initialize_model_state(
+        jax_task,
+        init_key,
+        init_batch,
+        checkpoint_type=checkpoint_types.CheckpointType.GDA,
     )
 
-    state = restart_state(model=model, config=config, learning_rate_fn=learning_rate_fn)
-    state = jax_utils.replicate(state)
+    jax_model_states.mdl_vars['params']['core_layer'] = tfm._train_state.mdl_vars['params']
+    gc.collect()
+
+    jax_task = task_p
+
+    key, train_key, eval_key = jax.random.split(key, 3)
+    train_prng_seed = jax.random.split(train_key, num=num_devices)
+    eval_prng_seed = jax.random.split(eval_key, num=num_devices)
+
+    p_train_step = jax.pmap(functools.partial(train_step, jax_task=jax_task), axis_name='batch')
+    p_eval_step = jax.pmap(functools.partial(eval_step, jax_task=jax_task), axis_name='batch')
+
+    replicated_jax_states = trainer_lib.replicate_model_state(jax_model_states)
 
     train_losses = []
 
     checkpoint_path = workdir + '/checkpoints/fine-tuning-'  + current_time 
 
+    logger.info('Starting training loop')
     for n_batch, batch in enumerate(train_loader):
         batch = jnp.array(batch)
         if plus_one:
             batch += jnp.ones_like(batch)
         batch = jnp.log(batch)
-        batch = reshape_batch(batch, model.num_devices)
-        loss, state = p_train_step(state, batch)
-        mean_loss = jnp.mean(loss)
-        train_losses.append(mean_loss)
+        batch = reshape_batch(batch, num_devices)
+        replicated_jax_states, step_fun_out = p_train_step(
+            replicated_jax_states, train_prng_seed, batch
+        )
+        train_losses.append(jnp.mean(step_fun_out.loss))
 
         if n_batch % steps_per_epoch == 0:
-            # End of 1 epoch, do eval
+            logger.info('Starting Eval')
             epoch = n_batch // steps_per_epoch
             if epoch > config.num_epochs:
                 break
+
             eval_losses = []
-            eval_losses_original = []
             conf_matrices = []
-            model._eval_context = base_layer.JaxContext.HParams(do_eval=True) #turns off things like dropout(or maybe not)
+
             for n_batch, batch in enumerate(eval_loader):
                 batch = jnp.array(batch)
                 if plus_one:
                     batch += jnp.ones_like(batch)
-                batch_log = jnp.log(batch)
-                batch_log = reshape_batch(batch_log, model.num_devices)
+                batch = jnp.log(batch)
+                batch = reshape_batch(batch, num_devices)
+                # logger.info(replicated_jax_states)
+                loss = p_eval_step(
+                    replicated_jax_states, eval_prng_seed, batch
+                )
+                eval_losses.append(jnp.mean(loss))
 
-                loss, conf_matrix, _, _ = p_eval_step(state, batch_log)
-                mean_loss = jnp.mean(loss)
-                eval_losses.append(mean_loss)
-                conf_matrices.append(conf_matrix)
-
-            model._eval_context = base_layer.JaxContext.HParams(do_eval=False)
 
             epoch_train_loss = np.mean(train_losses)
             epoch_eval_loss = np.mean(eval_losses)
-            epoch_eval_loss_original = np.mean(eval_losses_original)
-            conf_matrices = np.array(conf_matrices)
-            conf_matrix = np.sum(conf_matrices, axis=(0,1))
-            accuracy_val = accuracy(conf_matrix=conf_matrix)
-
-            print('Epoch {} \n Train Loss: {}, Eval Loss: {}, Original Loss: {}, Accuracy: {}'.format(epoch, epoch_train_loss, epoch_eval_loss, epoch_eval_loss_original, accuracy_val))
+            logger.info('Epoch {} \n Train Loss: {}, Eval Loss: {}'.format(epoch, epoch_train_loss, epoch_eval_loss))
 
             with writer.as_default():
                 tf.summary.scalar('Train Loss', epoch_train_loss, step=epoch)
-                tf.summary.scalar('Eval Loss Log', epoch_eval_loss, step=epoch)
-                tf.summary.scalar('Eval Loss Original', epoch_eval_loss_original, step=epoch)
-                tf.summary.scalar('Accuracy', accuracy(conf_matrix=conf_matrix), step=epoch)
+                tf.summary.scalar('Eval Loss', epoch_eval_loss, step=epoch)
             
             train_losses = []
-
-            if (epoch > 0) and (epoch % 10 == 0):
-                save_checkpoint(state, checkpoint_path, model=model)
+            eval_losses = []
+            conf_matrices = []
 
     jax.random.normal(jax.random.PRNGKey(0), ()).block_until_ready()
 
-    jax.config.update('jax_disable_jit', False)
-
-    return state
+    return 

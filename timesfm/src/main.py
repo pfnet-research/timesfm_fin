@@ -5,7 +5,7 @@ from absl import logging
 from clu import platform
 import jax
 from ml_collections import config_flags
-import timesfm_train as timesfm
+import timesfm
 
 import train
 
