@@ -24,3 +24,4 @@ Replace `/path/to/workdir` and `/path/to/dataset` with your local paths.
 Logs and tensorboard data will be stored in workdir. 
 
 ## Key benchmarks
+Training time: training completes within 30 minutes on 8 V100s.
