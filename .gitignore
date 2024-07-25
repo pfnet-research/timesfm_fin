@@ -163,7 +163,8 @@ cython_debug/
 
 
 # timesfm logs and checkpoints to be ignored
-timesfm/logs/
-timesfm/checkpoints/
-timesfm/src/run_train.sh
+timesfm_old_logs/
+run_train.sh
 analysis.ipynb
+logs/
+checkpoints/
