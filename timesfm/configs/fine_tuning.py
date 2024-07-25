@@ -50,6 +50,9 @@ def get_config():
   config.num_epochs = 100
   config.seed = 0  # init random seed
 
+  # Saving
+  config.epochs_per_checkpoint = 10
+
   return config
 
 

@@ -90,6 +90,23 @@ def random_masking(batch_train, input_len=512, context_len=512, output_len=128):
 
 
 def train_step(states, prng_key, batch, jax_task=None):
+    """
+    Performs a single training step for a JAX-based learning model.
+
+    This function prepares the batch data, converts it into the required format,
+    and invokes the single learner's training step function from `trainer_lib`.
+
+    Args:
+        states: A data structure containing the model's states, which might include
+                parameters, optimizer state, and any other stateful components.
+        prng_key: A JAX PRNG key, used for random number generation in a safe and
+                  reproducible manner.
+        batch: A batch of training data that includes both inputs and target sequences.
+        jax_task: Specifies the JAX task or model being trained. Defaults to None.
+
+    Returns:
+        Updated states after completing the training step.
+    """
     input_map, output_sequences = prepare_batch_data(batch)
     inputs = NestedMap(input_ts=input_map['input_ts'], actual_ts=output_sequences)
     return trainer_lib.train_step_single_learner(
@@ -105,8 +122,9 @@ def eval_step(states, prng_key, batch, jax_task=None, store_metrics=False):
     )
     loss = step_fun_out.loss
     if store_metrics:
-        new_conf_matrix, pred_returns, target_returns = get_conf_matrix(predictions=predictions, targets=output_sequences,\
-            prepend=input_map['input_ts'][:, -1:], output_len=output_len, use_diff=use_diff)
+        new_conf_matrix, pred_returns, target_returns = get_conf_matrix(
+            predictions=step_fun_out.per_example_out, targets=output_sequences, prepend=inputs[:, -1:]
+            )
         return loss, new_conf_matrix
     else:
         return loss
@@ -283,7 +301,7 @@ class PatchedDecoderFinetuneFinance(patched_decoder.PatchedDecoderFinetuneModel)
     return {"mse_loss": (mse_loss, loss_weight), "avg_qloss": (loss, loss_weight)}, per_example_out
 
 def train_and_evaluate(
-    model: Any, config: py_utils.NestedMap, workdir: str, num_classes=2, plus_one=False
+    model: Any, config: py_utils.NestedMap, workdir: str, num_classes=2, plus_one=True
 ) -> None:
     """
     Executes the model training and evaluation loop.
@@ -443,6 +461,15 @@ def train_and_evaluate(
             train_losses = []
             eval_losses = []
             conf_matrices = []
+
+            if (epoch % config.epochs_per_checkpoint) == 0:
+                print("Saving checkpoint.")
+                jax_state_for_saving = py_utils.maybe_unreplicate_for_fully_replicated(
+                    replicated_jax_states
+                )
+                checkpoints.save_checkpoint(
+                    jax_state_for_saving, checkpoint_path, overwrite=False
+                )
 
     jax.random.normal(jax.random.PRNGKey(0), ()).block_until_ready()
 
