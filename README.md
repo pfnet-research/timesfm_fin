@@ -1,4 +1,4 @@
-# Timesfm_fin
+# TimesFM fine-tuned on financial data
 
 ## Installation
 The `timesfm` package can only be installed in Python 3.10 due to package conflicts. Ensure that you have the correct Python version installed, and then run the following command:
@@ -21,3 +21,6 @@ python src/main.py --workdir=/path/to/workdir --config=configs/fine_tuning.py --
 ```
 
 Replace `/path/to/workdir` and `/path/to/dataset` with your local paths.
+Logs and tensorboard data will be stored in workdir. 
+
+## Key benchmarks
