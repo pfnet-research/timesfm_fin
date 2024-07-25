@@ -429,7 +429,6 @@ def train_and_evaluate(
         train_losses.append(jnp.mean(step_fun_out.loss))
 
         if n_batch % steps_per_epoch == 0:
-            logger.info('Starting Eval')
             epoch = n_batch // steps_per_epoch
             if epoch > config.num_epochs:
                 break
