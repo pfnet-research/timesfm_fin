@@ -122,7 +122,7 @@ def eval_step(states, prng_key, batch, jax_task=None, store_metrics=False):
     return step_fun_out, inputs['input_ts'], output_sequences
 
 
-def prepare_batch_data(batch, train=True, input_len=512, context_len=512, output_len=128, horizon_len=128):
+def prepare_batch_data(batch, train=True, input_len=512, context_len=512, output_len=128, horizon_len=64):
     """
     Prepares the batch data for training or evaluation by generating input sequences, output sequences, and input padding.
 
@@ -146,13 +146,15 @@ def prepare_batch_data(batch, train=True, input_len=512, context_len=512, output
         input_sequences, output_sequences, input_padding = random_masking(batch_train=batch)
     else:
         input_sequences = []
+        output_sequences = []
         for input_end in range(context_len, sequence_length, horizon_len):
             input_start = input_end-context_len
             input_sequences.append(batch[:, input_start:input_end])
+            output_sequences.append(batch[:, input_end:input_end+horizon_len])
         input_sequences = jnp.concatenate(input_sequences, axis=0)
+        output_sequences = jnp.concatenate(output_sequences, axis=0)
         batch_size = input_sequences.shape[0]
-        input_padding = jnp.zeros((batch_size, context_len+output_len))
-        output_sequences = batch[:, input_len:input_len+output_len]
+        input_padding = jnp.zeros((batch_size, context_len))
 
     inp_freq = jnp.zeros((batch_size, 1))
     
@@ -475,7 +477,7 @@ def train_and_evaluate(
             eval_losses = []
             conf_matrices = []
 
-            if (epoch % config.epochs_per_checkpoint) == 0:
+            if epoch>0 and (epoch % config.epochs_per_checkpoint) == 0:
                 print("Saving checkpoint.")
                 jax_state_for_saving = py_utils.maybe_unreplicate_for_fully_replicated(
                     replicated_jax_states
