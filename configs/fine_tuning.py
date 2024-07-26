@@ -43,7 +43,7 @@ def get_config():
   config.horizon_len = 128
 
   # Training
-  config.learning_rate = 1e-4
+  config.learning_rate = 5e-4
   config.warmup_epochs = 25
   config.momentum = 0.9
   config.batch_size = 128 * 8

@@ -143,6 +143,7 @@ def get_conf_matrix(predictions, targets, prepend, threshold=0.001, num_classes=
         prepend_targets = targets[:, :1]
     else:
         prepend_pred = prepend_targets = prepend
+    # print(prepend_pred.shape, predictions.shape)
     predictions = predictions[:, (horizon_len-1)::horizon_len]
     targets = targets[:, (horizon_len-1)::horizon_len]
     pred_returns = jnp.diff(predictions, n=1, prepend=prepend_pred)
@@ -178,4 +179,4 @@ def get_conf_matrix(predictions, targets, prepend, threshold=0.001, num_classes=
         ])
     
     conf_matrix_jax = confusion_matrix_jax(target_directions, pred_directions)
-    return conf_matrix_jax, pred_returns, target_returns
+    return conf_matrix_jax

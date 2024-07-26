@@ -70,8 +70,7 @@ def random_masking(batch_train, input_len=512, context_len=512, output_len=128):
         - input_padding (jnp.ndarray): The padding mask indicating which input items are kept.
     """
     batch_size, seq_len = batch_train.shape
-    random_drop = np.random.randint(0, context_len-output_len) #tune the 32 parameter to adjust training loss curve noisiness
-    # random_drop = 0 #new to avoid stochasticity (but turns out to be helpful?)
+    random_drop = np.random.randint(0, context_len-output_len) 
     if random_drop > 0:
         batch_train = batch_train[:, :-random_drop]
         prepend = jnp.ones((batch_size, random_drop))
@@ -79,11 +78,11 @@ def random_masking(batch_train, input_len=512, context_len=512, output_len=128):
     output_sequences = batch_train[:, -output_len:]
     input_sequences = batch_train[:, :-output_len]
 
-    nums = jnp.arange(0, context_len+output_len)
-    input_padding = jnp.array(nums).reshape((1, context_len+output_len))
+    nums = jnp.arange(0, context_len)
+    input_padding = jnp.array(nums).reshape((1, context_len))
     input_padding = jnp.repeat(input_padding, batch_size, axis=0)
     random_indices = np.random.randint(random_drop, context_len-output_len, size=(batch_size, 1))
-    random_indices = jnp.repeat(random_indices, context_len+output_len, axis=1)
+    random_indices = jnp.repeat(random_indices, context_len, axis=1)
     input_padding = jnp.where(input_padding >= random_indices, 0, 1)
 
     return input_sequences, output_sequences, input_padding
@@ -108,29 +107,22 @@ def train_step(states, prng_key, batch, jax_task=None):
         Updated states after completing the training step.
     """
     input_map, output_sequences = prepare_batch_data(batch)
-    inputs = NestedMap(input_ts=input_map['input_ts'], actual_ts=output_sequences)
+    inputs = NestedMap(input_ts=input_map['input_ts'], input_padding=input_map['input_padding'], actual_ts=output_sequences)
     return trainer_lib.train_step_single_learner(
         jax_task, states, prng_key, inputs
     )
 
 def eval_step(states, prng_key, batch, jax_task=None, store_metrics=False):
-    input_map, output_sequences = prepare_batch_data(batch)
+    input_map, output_sequences = prepare_batch_data(batch, train=False)
     inputs = NestedMap(input_ts=input_map['input_ts'], actual_ts=output_sequences)
     states = states.to_eval_state()
     _, step_fun_out = trainer_lib.eval_step_single_learner(
         jax_task, states, prng_key, inputs
     )
-    loss = step_fun_out.loss
-    if store_metrics:
-        new_conf_matrix, pred_returns, target_returns = get_conf_matrix(
-            predictions=step_fun_out.per_example_out, targets=output_sequences, prepend=inputs[:, -1:]
-            )
-        return loss, new_conf_matrix
-    else:
-        return loss
+    return step_fun_out, inputs['input_ts'], output_sequences
 
 
-def prepare_batch_data(batch, train=True, input_len=512, context_len=512, output_len=128):
+def prepare_batch_data(batch, train=True, input_len=512, context_len=512, output_len=128, horizon_len=128):
     """
     Prepares the batch data for training or evaluation by generating input sequences, output sequences, and input padding.
 
@@ -140,6 +132,7 @@ def prepare_batch_data(batch, train=True, input_len=512, context_len=512, output
     input_len (int, optional): The length of input sequences to be considered. Defaults to 512.
     context_len (int, optional): The length of the context. Defaults to 512.
     output_len (int, optional): The length of the output sequences. Defaults to 128.
+    horizon_len (int, optional): The length of the prediction horizon. Defaults to 128. Must divide sequence_length.
 
     Returns:
     tuple: A tuple containing:
@@ -149,11 +142,15 @@ def prepare_batch_data(batch, train=True, input_len=512, context_len=512, output
     batch_size, sequence_length = batch.shape
     num_input_patches = sequence_length // input_len + 1
 
-    if train: #also guarantee that input length is never larger than context length (usually input length is set to context length in training)
+    if train: 
         input_sequences, output_sequences, input_padding = random_masking(batch_train=batch)
-        
     else:
-        input_sequences = batch[:, max(0, input_len - context_len):input_len]
+        input_sequences = []
+        for input_end in range(context_len, sequence_length, horizon_len):
+            input_start = input_end-context_len
+            input_sequences.append(batch[:, input_start:input_end])
+        input_sequences = jnp.concatenate(input_sequences, axis=0)
+        batch_size = input_sequences.shape[0]
         input_padding = jnp.zeros((batch_size, context_len+output_len))
         output_sequences = batch[:, input_len:input_len+output_len]
 
@@ -297,7 +294,7 @@ class PatchedDecoderFinetuneFinance(patched_decoder.PatchedDecoderFinetuneModel)
       loss += self._quantile_loss(pred_ts[:, :, i + 1], actual_ts, quantile)
     loss = loss.mean()
     loss_weight = jnp.array(1.0, dtype=jnp.float32)
-    per_example_out = NestedMap()
+    per_example_out = NestedMap(prediction=pred_ts[:, :, 0])
     return {"mse_loss": (mse_loss, loss_weight), "avg_qloss": (loss, loss_weight)}, per_example_out
 
 def train_and_evaluate(
@@ -408,7 +405,7 @@ def train_and_evaluate(
     eval_prng_seed = jax.random.split(eval_key, num=num_devices)
 
     p_train_step = jax.pmap(functools.partial(train_step, jax_task=jax_task), axis_name='batch')
-    p_eval_step = jax.pmap(functools.partial(eval_step, jax_task=jax_task), axis_name='batch')
+    p_eval_step = jax.pmap(functools.partial(eval_step, jax_task=jax_task, store_metrics=True), axis_name='batch')
 
     replicated_jax_states = trainer_lib.replicate_model_state(jax_model_states)
 
@@ -418,6 +415,7 @@ def train_and_evaluate(
 
     logger.info('Starting training loop')
     for n_batch, batch in enumerate(train_loader):
+        #prepare data for train
         batch = jnp.array(batch)
         if plus_one:
             batch += jnp.ones_like(batch)
@@ -426,6 +424,7 @@ def train_and_evaluate(
         replicated_jax_states, step_fun_out = p_train_step(
             replicated_jax_states, train_prng_seed, batch
         )
+        # print('train loss:', step_fun_out.loss)
         train_losses.append(jnp.mean(step_fun_out.loss))
 
         if n_batch % steps_per_epoch == 0:
@@ -437,25 +436,33 @@ def train_and_evaluate(
             conf_matrices = []
 
             for n_batch, batch in enumerate(eval_loader):
+                #prepare data for eval
                 batch = jnp.array(batch)
                 if plus_one:
                     batch += jnp.ones_like(batch)
                 batch = jnp.log(batch)
                 batch = reshape_batch(batch, num_devices)
-                # logger.info(replicated_jax_states)
-                loss = p_eval_step(
+                #eval step
+                step_fun_out, inputs, targets = p_eval_step(
                     replicated_jax_states, eval_prng_seed, batch
                 )
-                eval_losses.append(jnp.mean(loss))
-
+                preds = step_fun_out.per_example_out['prediction'][0]
+                targets = targets.reshape(-1, 128)
+                inputs = inputs.reshape(-1, 512)
+                conf_matrices.append(get_conf_matrix(preds, targets , inputs[:, -1:],\
+                 threshold=0., num_classes=2, horizon_len=128, use_diff=False))
+                eval_losses.append(jnp.mean(step_fun_out.loss))
 
             epoch_train_loss = np.mean(train_losses)
             epoch_eval_loss = np.mean(eval_losses)
-            logger.info('Epoch {} \n Train Loss: {}, Eval Loss: {}'.format(epoch, epoch_train_loss, epoch_eval_loss))
+            conf_matrix = np.sum(conf_matrices, axis=0)
+            acc = accuracy(conf_matrix)
+            logger.info('Epoch {} \n Train Loss: {}, Eval Loss: {}, Accuracy:{}'.format(epoch, epoch_train_loss, epoch_eval_loss, acc))
 
             with writer.as_default():
                 tf.summary.scalar('Train Loss', epoch_train_loss, step=epoch)
                 tf.summary.scalar('Eval Loss', epoch_eval_loss, step=epoch)
+                tf.summary.scalar('Accuracy', acc, step=epoch)
             
             train_losses = []
             eval_losses = []
