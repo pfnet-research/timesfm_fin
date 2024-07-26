@@ -297,6 +297,16 @@ class PatchedDecoderFinetuneFinance(patched_decoder.PatchedDecoderFinetuneModel)
     per_example_out = NestedMap(prediction=pred_ts[:, :, 0])
     return {"mse_loss": (mse_loss, loss_weight), "avg_qloss": (loss, loss_weight)}, per_example_out
 
+def postprocess_metrics(step_fun_out, inputs, targets):
+    preds = step_fun_out.per_example_out['prediction'][0]
+    targets = targets.reshape(-1, targets.shape[-1])
+    inputs = inputs.reshape(-1, inputs.shape[-1])
+    metrics = {}
+    pred_returns = get_returns(preds, inputs)
+    target_returns = get_returns(targets, inputs)
+    metrics['confusion matrix'] = get_confusion_matrix(pred_returns, target_returns)
+    return metrics
+
 def train_and_evaluate(
     model: Any, config: py_utils.NestedMap, workdir: str, num_classes=2, plus_one=True
 ) -> None:
@@ -378,7 +388,7 @@ def train_and_evaluate(
 
     num_devices = jax.local_device_count()
     logger.info(f'num_devices: {num_devices}')
-    # logger.info(f'device kind: {jax.local_devices()[0].device_kind}') #this line takes up a lot of time
+    logger.info(f'device kind: {jax.local_devices()[0].device_kind}') #this line takes up a lot of time
 
     jax_task = task_p
     key = jax.random.PRNGKey(seed=config.seed)
@@ -446,18 +456,15 @@ def train_and_evaluate(
                 step_fun_out, inputs, targets = p_eval_step(
                     replicated_jax_states, eval_prng_seed, batch
                 )
-                preds = step_fun_out.per_example_out['prediction'][0]
-                targets = targets.reshape(-1, 128)
-                inputs = inputs.reshape(-1, 512)
-                conf_matrices.append(get_conf_matrix(preds, targets , inputs[:, -1:],\
-                 threshold=0., num_classes=2, horizon_len=128, use_diff=False))
+                metrics = postprocess_metrics(step_fun_out, inputs, targets)
+                conf_matrices.append(metrics['confusion matrix'])
                 eval_losses.append(jnp.mean(step_fun_out.loss))
 
             epoch_train_loss = np.mean(train_losses)
             epoch_eval_loss = np.mean(eval_losses)
             conf_matrix = np.sum(conf_matrices, axis=0)
             acc = accuracy(conf_matrix)
-            logger.info('Epoch {} \n Train Loss: {}, Eval Loss: {}, Accuracy:{}'.format(epoch, epoch_train_loss, epoch_eval_loss, acc))
+            logger.info('Epoch {} \n Train Loss: {}, Eval Loss: {}, Accuracy: {}'.format(epoch, epoch_train_loss, epoch_eval_loss, acc))
 
             with writer.as_default():
                 tf.summary.scalar('Train Loss', epoch_train_loss, step=epoch)

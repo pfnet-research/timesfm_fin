@@ -110,6 +110,47 @@ def chance_rate(conf_matrix):
     prob = cat / total
     return np.sum(prob ** 2)
 
+def get_returns(predictions, inputs):
+    return (predictions[:, -1] - inputs[:, -1])/inputs[:, -1]
+
+def get_confusion_matrix(predictions, targets, threshold=0., num_classes=2):
+    """
+    Computes the confusion matrix, predicted returns, and target returns from the given predictions and targets.
+
+    Parameters:
+    predictions (array-like): The predicted values from the model.
+    targets (array-like): The true target values.
+    threshold (float, optional): The threshold for classifying the returns. Defaults to 0.001.
+    num_classes (int, optional): The number of classes for classification. Defaults to 2.
+
+    Returns:
+    tuple: A tuple containing:
+        - conf_matrix_jax (jnp.ndarray): The confusion matrix.
+        - pred_returns (jnp.ndarray): The predicted returns.
+        - target_returns (jnp.ndarray): The target returns.
+    """
+
+    if num_classes==3:
+        def classify(value, threshold=threshold):
+            return jnp.where(value > threshold, 0, jnp.where(value < -threshold, 1, 2))
+    else:
+        # assume that num_classes==2
+        assert num_classes==2
+        def classify(value, threshold=threshold):
+            return jnp.where(value > threshold, 0, jnp.where(value < -threshold, 1, 2))
+
+    pred_directions = classify(predictions)
+    target_directions = classify(targets)
+
+    # Confusion matrix implementation using JAX
+    def confusion_matrix_jax(target, pred, num_classes=num_classes):
+        return jnp.array([
+            [(target == i).astype(jnp.int32).dot((pred == j).astype(jnp.int32)) for j in range(num_classes)] 
+            for i in range(num_classes)
+        ])
+    
+    conf_matrix_jax = confusion_matrix_jax(target_directions, pred_directions)
+    return conf_matrix_jax
 
 def get_conf_matrix(predictions, targets, prepend, threshold=0.001, num_classes=2, horizon_len=None, use_diff=False):
     """
