@@ -4,6 +4,8 @@ import data_paths
 def load_data(asset, data_path=None):
     if data_path is None:
         data_path = data_paths.data_paths[asset]
+    else:
+        return pd.read_csv(data_path)
 
     if asset == 'topix500':
         df = pd.read_csv(data_path)
@@ -40,6 +42,8 @@ def load_data(asset, data_path=None):
 def load_data_returns(asset, data_path=None):
     if data_path is None:
         data_path = data_paths.data_paths[asset]
+    else:
+        return pd.read_csv(data_path)
 
     if asset == 'forex':
         df = pd.read_csv(data_path).set_index('Date')
