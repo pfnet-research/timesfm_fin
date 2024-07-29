@@ -168,3 +168,5 @@ run_train.sh
 analysis.ipynb
 logs/
 checkpoints/
+mock_trading_utils.py
+mock_trading/

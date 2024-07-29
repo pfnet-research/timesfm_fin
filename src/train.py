@@ -229,7 +229,7 @@ def reshape_batch(batch, num_devices):
 
 
 @pax_fiddle.auto_config
-def build_learner(learning_rate:float, warmup_epochs:int, total_epochs:int, steps_per_epoch:int) -> learners.Learner:
+def build_learner(learning_rate:float, momentum:float, warmup_epochs:int, total_epochs:int, steps_per_epoch:int) -> learners.Learner:
   return pax_fiddle.Config(
       learners.Learner,
       name='learner',
@@ -237,6 +237,7 @@ def build_learner(learning_rate:float, warmup_epochs:int, total_epochs:int, step
       optimizer=optimizers.Sgd(
         clip_gradient_norm_to_value=1.,
         learning_rate=learning_rate,
+        momentum=momentum,
         lr_schedule=pax_fiddle.Config(
             schedules.LinearRampupCosineDecay,
             warmup_steps=warmup_epochs*steps_per_epoch,
@@ -308,7 +309,7 @@ def postprocess_metrics(step_fun_out, inputs, targets):
     return metrics
 
 def train_and_evaluate(
-    model: Any, config: py_utils.NestedMap, workdir: str, num_classes=2, plus_one=True
+    model: Any, config: py_utils.NestedMap, workdir: str, num_classes=2, plus_one=False
 ) -> None:
     """
     Executes the model training and evaluation loop.
@@ -374,6 +375,7 @@ def train_and_evaluate(
         train=tasks_lib.SingleTask.Train(
             learner=build_learner(
                 learning_rate=config.learning_rate,
+                momentum=config.momentum,
                 warmup_epochs=config.warmup_epochs,
                 total_epochs=config.num_epochs,
                 steps_per_epoch=steps_per_epoch),

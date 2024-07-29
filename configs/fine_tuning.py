@@ -44,7 +44,7 @@ def get_config():
 
   # Training
   config.learning_rate = 5e-4
-  config.warmup_epochs = 10
+  config.warmup_epochs = 25
   config.momentum = 0.9
   config.batch_size = 128 * 8
   config.num_epochs = 100
