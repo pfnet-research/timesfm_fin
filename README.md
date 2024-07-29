@@ -46,9 +46,9 @@ Logs, tensorboard data and checkpoints will be stored in `workdir`.
 We provide our mock trading script and notebook used in calculating several evaluation metrics. To run the mock trading script, use the following command 
 
 ```bash
-python src/mock_trading.py --workdir=/path/to/workdir
+python src/mock_trading.py --workdir=/path/to/workdir --data_path=/path/to/dataset
 ```
-where `workdir` is where the `positions.csv` file, representing the buy/sell orders of each day, will be stored. 
+where `workdir` is where the `positions.csv` file, representing the buy/sell orders of each day, will be stored. `data_path` is the path to your test dataset location. `mock_trading_utils.py` contains some data loading functions but is mainly for PFN internal usage. Please adapt this to your own data cleansing needs. 
 
 ## Key benchmarks
 For reference, we provide some key performance benchmarks attained by our experimental runs.
