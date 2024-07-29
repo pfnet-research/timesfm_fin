@@ -30,7 +30,8 @@ Logs, tensorboard data and checkpoints will be stored in `workdir`.
 | Hyperparameter/Architecture    | Setting                           |
 |--------------------------------|-----------------------------------|
 | Optimizer                      | SGD                               |
-| Training epochs                | 25 (linear warmup), 75 (cosine decay) |
+| Linear warmup epochs           | 25 |
+| Total epochs                   | 100 |
 | Peak learning rate             | 5e-4                              |
 | Momentum                       | 0.9                               |
 | Gradient clip (max norm)       | 1.0                               |
