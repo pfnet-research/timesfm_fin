@@ -51,7 +51,9 @@ def main(argv):
     intervals = [2, 4, 8, 16, 32, 64, 128]
 
     if checkpoint_path is not None:
-        save_folder = os.path.join(workdir, checkpoint_path)
+        checkpoint_file = os.path.basename(checkpoint_path.rstrip('/'))
+        save_folder = os.path.join(workdir, checkpoint_file)
+        print('Files saved to:', save_folder)
     else:
         save_folder = os.path.join(workdir, 'original')
     if not os.path.exists(save_folder):
