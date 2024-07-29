@@ -33,7 +33,7 @@ from paxml import checkpoint_types
 from clu import metric_writers
 import tensorflow as tf
 
-from utils import *
+from utils import mse, get_accuracy, get_returns, get_confusion_matrix
 
 NestedMap = py_utils.NestedMap
 JTensor = pytypes.JTensor
@@ -122,7 +122,7 @@ def eval_step(states, prng_key, batch, jax_task=None, store_metrics=False):
     return step_fun_out, inputs['input_ts'], output_sequences
 
 
-def prepare_batch_data(batch, train=True, input_len=512, context_len=512, output_len=128, horizon_len=64):
+def prepare_batch_data(batch, train=True, input_len=512, context_len=512, output_len=128, horizon_len=128):
     """
     Prepares the batch data for training or evaluation by generating input sequences, output sequences, and input padding.
 
@@ -465,7 +465,7 @@ def train_and_evaluate(
             epoch_train_loss = np.mean(train_losses)
             epoch_eval_loss = np.mean(eval_losses)
             conf_matrix = np.sum(conf_matrices, axis=0)
-            acc = accuracy(conf_matrix)
+            acc = get_accuracy(conf_matrix)
             logger.info('Epoch {} \n Train Loss: {}, Eval Loss: {}, Accuracy: {}'.format(epoch, epoch_train_loss, epoch_eval_loss, acc))
 
             with writer.as_default():
