@@ -17,6 +17,7 @@ flags.DEFINE_bool('gpu', True, 'Whether to use gpu')
 flags.DEFINE_bool('use_log', True, 'Whether to log data')
 flags.DEFINE_string('asset', 'sp500', 'One of forex/topix500/sp500/crypto_hourly/crypto_daily')
 flags.DEFINE_string('workdir', None, 'Directory to store position csv file')
+flags.DEFINE_string('data_path', None, 'Directory to price data to input to model')
 
 context_len = 512
 output_len = 128
@@ -29,8 +30,9 @@ def main(argv):
     plus_one = FLAGS.plus_one
     use_log = FLAGS.use_log
     workdir = FLAGS.workdir
+    data_path = FLAGS.data_path
     print('Asset:', asset)
-    df = mock_trading_utils.load_data(asset=asset)
+    df = mock_trading_utils.load_data(asset=asset, data_path=data_path)
 
     prediction_dates = df[df.index > '2023'].index
 
