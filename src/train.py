@@ -104,7 +104,7 @@ def train_step(states, prng_key, batch, jax_task=None):
         jax_task: Specifies the JAX task or model being trained. Defaults to None.
 
     Returns:
-        Updated states after completing the training step.
+        Updated states after completing the training step, in a tuple (state, step_function_output)
     """
     input_map, output_sequences = prepare_batch_data(batch)
     inputs = NestedMap(input_ts=input_map['input_ts'], input_padding=input_map['input_padding'], actual_ts=output_sequences)
@@ -113,6 +113,26 @@ def train_step(states, prng_key, batch, jax_task=None):
     )
 
 def eval_step(states, prng_key, batch, jax_task=None, store_metrics=False):
+    """
+    Performs a single evaluation step for a JAX-based learning model.
+
+    This function prepares the batch data, converts it into the required format,
+    and invokes the single learner's evaluation step function from `trainer_lib`.
+
+    Args:
+        states: A data structure containing the model's states, which might include
+                parameters, optimizer state, and any other stateful components.
+        prng_key: A JAX PRNG key, used for random number generation in a safe and
+                  reproducible manner.
+        batch: A batch of training data that includes both inputs and target sequences.
+        jax_task: Specifies the JAX task or model being trained. Defaults to None.
+
+    Returns:
+        A tuple containing:
+        - step_function_output (contains the loss here)
+        - input sequences
+        - output_sequences (ground truth)
+    """
     input_map, output_sequences = prepare_batch_data(batch, train=False)
     inputs = NestedMap(input_ts=input_map['input_ts'], actual_ts=output_sequences)
     states = states.to_eval_state()
@@ -382,7 +402,7 @@ def train_and_evaluate(
         ),
     )
 
-    # task_p.model.ici_mesh_shape = [1, 1, 1]
+    # task_p.model.ici_mesh_shape = [1, 1, 1] #TODO: optimize this for parallelization
     # task_p.model.mesh_axis_names = ['replica', 'data', 'mdl']
 
     # DEVICES = np.array(jax.devices()).reshape([1, 1, 1])
