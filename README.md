@@ -1,7 +1,7 @@
 # Fine-tuning TimesFM on financial data
 
 ## Introduction
-[TimesFM] (https://github.com/google-research/timesfm) is a time series foundation model released by Google in 2024. This repo contains code following this [work] (https://tech.preferred.jp/en/), fine-tuning TimesFM on financial data, aligning towards the task of price prediction.
+[TimesFM](https://github.com/google-research/timesfm)  is a time series foundation model released by Google in 2024. This repo contains code following this [work](https://tech.preferred.jp/en/) , fine-tuning TimesFM on financial data, aligning towards the task of price prediction.
 
 ## Installation
 The `timesfm` package can only be installed in Python 3.10 due to package conflicts. Ensure that you have the correct Python version installed, and then run the following command:
