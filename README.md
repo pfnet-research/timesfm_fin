@@ -41,6 +41,14 @@ Logs, tensorboard data and checkpoints will be stored in `workdir`.
 | Layers                         | 20                                |
 | Hidden dimensions              | 1280                              |
 
+## Mock trading
+We provide our mock trading script and notebook used in calculating several evaluation metrics. To run the mock trading script, use the following command 
+
+```bash
+python src/mock_trading.py --workdir=/path/to/workdir
+```
+where `workdir` is where the `positions.csv` file, representing the buy/sell orders of each day, will be stored. 
+
 ## Key benchmarks
 For reference, we provide some key performance benchmarks attained by our experimental runs.
 We are able to achieve around a 30% of overall train/eval loss reduction. On our test set, we achieve the following performance on S&P500. 
