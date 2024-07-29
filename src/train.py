@@ -255,9 +255,7 @@ class PatchedDecoderFinetuneFinance(patched_decoder.PatchedDecoderFinetuneModel)
   """Model class for finetuning patched time-series decoder.
   We adjust the default implementation to include masking during fine-tuning 
 
-  Attributes:
-    core_layer_tpl: config for core layer.
-    freq: freq to finetune on.
+  For more detailed description of the functions see https://github.com/google-research/timesfm/blob/master/src/timesfm/patched_decoder.py#L490
   """
 
   def compute_predictions(self, input_batch: NestedMap) -> NestedMap:
