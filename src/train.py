@@ -267,8 +267,8 @@ def build_learner(learning_rate:float, momentum:float, warmup_epochs:int, total_
             max=1. # this value is multiplied by the base learning rate (https://github.com/google/praxis/blob/da4fe8dfc762e510a26c4c241f319b38c1f34366/praxis/optimizers.py#L1194)
         ),
       ),
-      # Linear probing i.e we hold the transformer layers fixed.
-      bprop_variable_exclusion=['.*/stacked_transformer_layer/.*'],
+      # Linear probing i.e we hold the transformer layers fixed. (deactivated)
+    #   bprop_variable_exclusion=['.*/stacked_transformer_layer/.*'],
   )
 
 
@@ -329,7 +329,7 @@ def postprocess_metrics(step_fun_out, inputs, targets):
     return metrics
 
 def train_and_evaluate(
-    model: Any, config: py_utils.NestedMap, workdir: str, num_classes=2, plus_one=False
+    model: Any, config: py_utils.NestedMap, workdir: str, num_classes=2, plus_one=True
 ) -> None:
     """
     Executes the model training and evaluation loop.

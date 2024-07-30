@@ -55,6 +55,10 @@ def load_data_returns(asset, data_path=None):
         df = df[mask]
         df = df.pivot(index='timestamp', columns='symbol', values='close')
         df = df.dropna(axis=1, how='all')
+        # some stock splits happened, we want to filter them out
+        max_change = (df.diff().shift(-1)/df).abs().max()
+        mask = ~(max_change > 0.4)
+        df = df.loc[:, mask]
 
     elif asset == 'sp500':
         df = pd.read_csv(data_path).set_index('Date')
@@ -62,7 +66,20 @@ def load_data_returns(asset, data_path=None):
         df = df.dropna(axis=1)
 
     elif asset == 'crypto_daily':
-        df = pd.read_csv('data_path')
+        df = pd.read_csv(data_path)
         df = df.set_index('close_time')
-        #df = df.dropna(axis=1, how='any')
+        biggest_cryptos_by_volume = [
+            "BTCUSDT close",
+            "ETHUSDT close",
+            "BNBUSDT close",
+            "XRPUSDT close",
+            "LTCUSDT close",
+            "ADAUSDT close",
+            "DOTUSDT close",
+            "UNIUSDT close",
+            "LINKUSDT close",
+            "TRXUSDT close",
+            "DOGEUSDT close",
+        ]
+        df = df[biggest_cryptos_by_volume]
     return df

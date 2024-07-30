@@ -18,6 +18,7 @@ flags.DEFINE_bool('use_log', True, 'Whether to log data')
 flags.DEFINE_string('asset', 'sp500', 'One of forex/topix500/sp500/crypto_hourly/crypto_daily')
 flags.DEFINE_string('workdir', None, 'Directory to store position csv file')
 flags.DEFINE_string('data_path', None, 'Directory to price data to input to model')
+flags.DEFINE_integer('horizon', None, 'Prediction horizon length')
 
 context_len = 512
 output_len = 128
@@ -31,6 +32,8 @@ def main(argv):
     use_log = FLAGS.use_log
     workdir = FLAGS.workdir
     data_path = FLAGS.data_path
+    if workdir is None:
+        workdir = os.path.abspath(os.path.join(os.getcwd(), 'mock_trading'))
     print('Asset:', asset)
     df = mock_trading_utils.load_data(asset=asset, data_path=data_path)
 
@@ -50,16 +53,19 @@ def main(argv):
 
     tfm.load_from_checkpoint(checkpoint_path)
 
-    intervals = [2, 4, 8, 16, 32, 64, 128]
+    if FLAGS.horizon is not None:
+        intervals = [FLAGS.horizon]
+    else:
+        intervals = [2, 4, 8, 16, 32, 64, 128]
 
     if checkpoint_path is not None:
         checkpoint_file = os.path.basename(checkpoint_path.rstrip('/'))
         save_folder = os.path.join(workdir, checkpoint_file)
-        print('Files saved to:', save_folder)
     else:
         save_folder = os.path.join(workdir, 'original')
     if not os.path.exists(save_folder):
         os.makedirs(save_folder)
+    print('Files saved to:', save_folder)
 
     for interval in intervals:
         print('Currently running interval:', interval)
@@ -91,5 +97,4 @@ def main(argv):
         pos.to_csv(pos_save_path)
 
 if __name__ == '__main__':
-    flags.mark_flags_as_required(['workdir'])
     app.run(main)
