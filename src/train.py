@@ -268,7 +268,7 @@ def build_learner(learning_rate:float, momentum:float, warmup_epochs:int, total_
         ),
       ),
       # Linear probing i.e we hold the transformer layers fixed.
-    #   bprop_variable_exclusion=['.*/stacked_transformer_layer/.*'],
+      bprop_variable_exclusion=['.*/stacked_transformer_layer/.*'],
   )
 
 
