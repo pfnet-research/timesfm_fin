@@ -28,8 +28,8 @@ devices = 8
 def main(argv):
     asset = FLAGS.asset
     checkpoint_path =  FLAGS.checkpoint_path
-    plus_one = FLAGS.plus_one
-    use_log = FLAGS.use_log
+    plus_one = FLAGS.plus_one if checkpoint_path is not None else False
+    use_log = FLAGS.use_log if checkpoint_path is not None else False
     workdir = FLAGS.workdir
     data_path = FLAGS.data_path
     if workdir is None:

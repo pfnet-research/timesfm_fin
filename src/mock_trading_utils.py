@@ -68,18 +68,5 @@ def load_data_returns(asset, data_path=None):
     elif asset == 'crypto_daily':
         df = pd.read_csv(data_path)
         df = df.set_index('close_time')
-        biggest_cryptos_by_volume = [
-            "BTCUSDT close",
-            "ETHUSDT close",
-            "BNBUSDT close",
-            "XRPUSDT close",
-            "LTCUSDT close",
-            "ADAUSDT close",
-            "DOTUSDT close",
-            "UNIUSDT close",
-            "LINKUSDT close",
-            "TRXUSDT close",
-            "DOGEUSDT close",
-        ]
-        df = df[biggest_cryptos_by_volume]
+        df = df[pd.to_datetime(df.index).hour == 23]
     return df
