@@ -112,7 +112,7 @@ def train_step(states, prng_key, batch, jax_task=None):
         jax_task, states, prng_key, inputs
     )
 
-def eval_step(states, prng_key, batch, jax_task=None, store_metrics=False):
+def eval_step(states, prng_key, batch, jax_task=None, store_metrics=False, horizon_len=128):
     """
     Performs a single evaluation step for a JAX-based learning model.
 
@@ -133,7 +133,7 @@ def eval_step(states, prng_key, batch, jax_task=None, store_metrics=False):
         - input sequences
         - output_sequences (ground truth)
     """
-    input_map, output_sequences = prepare_batch_data(batch, train=False)
+    input_map, output_sequences = prepare_batch_data(batch, train=False, horizon_len=horizon_len)
     inputs = NestedMap(input_ts=input_map['input_ts'], actual_ts=output_sequences)
     states = states.to_eval_state()
     _, step_fun_out = trainer_lib.eval_step_single_learner(
@@ -329,7 +329,7 @@ def postprocess_metrics(step_fun_out, inputs, targets):
     return metrics
 
 def train_and_evaluate(
-    model: Any, config: py_utils.NestedMap, workdir: str, num_classes=2, plus_one=True
+    model: Any, config: py_utils.NestedMap, workdir: str, num_classes=2, plus_one=False
 ) -> None:
     """
     Executes the model training and evaluation loop.
@@ -443,7 +443,7 @@ def train_and_evaluate(
 
     train_losses = []
 
-    checkpoint_path = workdir + '/checkpoints/fine-tuning-'  + current_time 
+    checkpoint_path = os.path.join(workdir, 'checkpoints/fine-tuning-' + current_time)
 
     logger.info('Starting training loop')
     for n_batch, batch in enumerate(train_loader):
@@ -494,8 +494,6 @@ def train_and_evaluate(
                 tf.summary.scalar('Accuracy', acc, step=epoch)
             
             train_losses = []
-            eval_losses = []
-            conf_matrices = []
 
             if epoch>0 and (epoch % config.epochs_per_checkpoint) == 0:
                 print("Saving checkpoint.")

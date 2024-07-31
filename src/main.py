@@ -8,6 +8,7 @@ from ml_collections import config_flags
 import timesfm
 
 import train
+import evaluation
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -18,6 +19,9 @@ FLAGS = flags.FLAGS
 flags.DEFINE_string('workdir', None, 'Directory to store model data.')
 flags.DEFINE_bool('debug', False, 'Debugging mode.')
 flags.DEFINE_string('dataset_path', None, 'Path to training/test dataset')
+flags.DEFINE_bool('do_eval', False, 'Evaluation mode.')
+flags.DEFINE_string('checkpoint_path', None, 'Path to checkpoint.')
+
 config_flags.DEFINE_config_file(
     'config',
     None,
@@ -28,7 +32,10 @@ config_flags.DEFINE_config_file(
 def main(argv):
   config = FLAGS.config
   workdir = FLAGS.workdir
+  do_eval = FLAGS.do_eval
+  checkpoint_path = FLAGS.checkpoint_path
   config.dataset_path = FLAGS.dataset_path
+
   tfm = timesfm.TimesFm(
     context_len=512,
     horizon_len=128, # TODO: why does setting horizon_len to 512 not work
@@ -39,9 +46,15 @@ def main(argv):
     backend='gpu'
   )
 
-  tfm.load_from_checkpoint(repo_id="google/timesfm-1.0-200m")
-
-  train.train_and_evaluate(tfm, config, workdir)
+  if checkpoint_path is not None:
+    tfm.load_from_checkpoint(checkpoint_path)
+  else:
+    tfm.load_from_checkpoint(repo_id="google/timesfm-1.0-200m")
+  
+  if do_eval:
+    evaluation.restore_and_evaluate(tfm, config, workdir)
+  else:
+    train.train_and_evaluate(tfm, config, workdir)
 
 
 if __name__ == '__main__':
