@@ -4,11 +4,19 @@
 [TimesFM](https://github.com/google-research/timesfm)  is a time series foundation model released by Google in 2024. This repo contains code following this [work](https://tech.preferred.jp/en/) , fine-tuning TimesFM on financial data, aligning towards the task of price prediction.
 
 ## Installation
-The `timesfm` package can only be installed in *Python 3.10* due to package conflicts. Ensure that you have the correct Python version installed, and then run the following command:
+The `timesfm` package can only be installed in *Python 3.10* due to package conflicts. Ensure that you have the correct Python version installed, which in conda can be done with 
+
+```bash
+conda create -n myenv python=3.10
+```
+
+and then installing the package:
 
 ```bash
 pip install timesfm
 ```
+
+To run the AR1 model in `mock_trading.ipynb`, you will also need the `statsmodels` package. 
 
 ## Data
 The fine-tuning dataset is proprietary and not publicly available. However, you can download the necessary data using the following APIs:
