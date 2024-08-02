@@ -8,6 +8,7 @@ The `timesfm` package can only be installed in *Python 3.10* due to package conf
 
 ```bash
 conda create -n myenv python=3.10
+conda activate myenv
 ```
 
 and then installing the package:
