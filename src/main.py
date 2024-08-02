@@ -17,7 +17,6 @@ warnings.filterwarnings("ignore")
 FLAGS = flags.FLAGS
 
 flags.DEFINE_string('workdir', None, 'Directory to store model data.')
-flags.DEFINE_bool('debug', False, 'Debugging mode.')
 flags.DEFINE_string('dataset_path', None, 'Path to training/test dataset')
 flags.DEFINE_bool('do_eval', False, 'Evaluation mode.')
 flags.DEFINE_string('checkpoint_path', None, 'Path to checkpoint.')
