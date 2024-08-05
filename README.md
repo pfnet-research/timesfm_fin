@@ -80,3 +80,7 @@ The following is a sharpe ratio comparison between our model and traditional ben
 | TOPIX500       | 1.06 | -1.75            | 0.11   | -0.82|
 | Currencies     | 0.25 | -0.04            | -0.03  | 0.88 |
 | Crypto Daily   | 0.26 | -0.03            | 0.01   | 0.17 |
+
+## Weights
+Pretrained weight is available: https://huggingface.co/pfnet/timesfm-1.0-200m-fin
+
