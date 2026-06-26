@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "timesfm_fin"
+version = "0.1.0"
+description = "Fine-tuning Google TimesFM on financial data for price prediction"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+authors = [{name = "timesfm_fin contributors"}]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "License :: OSI Approved :: Apache Software License",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Office/Business :: Financial",
+]
+
+dependencies = [
+    "absl-py>=1.0",
+    "clu>=0.0.6",
+    "jax>=0.10",
+    "jaxlib>=0.10",
+    "ml-collections>=0.1",
+    "numpy>=1.24",
+    "optax>=0.1",
+    "pandas>=2.0",
+    "scikit-learn>=1.2",
+    "scipy>=1.10",
+    "statsmodels>=0.14",
+    "timesfm>=2.0",
+]
+
+[project.optional-dependencies]
+training = [
+    "flax",
+    "orbax",
+    "paxml>=1.0",
+    "praxis>=1.0",
+    "tensorflow",
+    "tensorflow-datasets",
+]
+
+[project.urls]
+Repository = "https://github.com/google-research/timesfm"
+Documentation = "https://github.com/google-research/timesfm"
+
+[project.scripts]
+finetune-timesfm = "main:main"
+mock-trading = "mock_trading:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+py-modules = [
+    "main",
+    "train",
+    "train_flax",
+    "evaluation",
+    "utils",
+    "mock_trading",
+    "mock_trading_utils",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
